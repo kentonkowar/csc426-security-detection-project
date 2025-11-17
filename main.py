@@ -19,7 +19,7 @@ def clean_dataset(df: pd.DataFrame):
     # remove inf
     df = df.replace([float("inf"), "inf", "Infinity", "infinity"], sys.float_info.max)
     # remove nan
-    df = df.replace("nan", -2)
+    df = df.replace(np.nan, -2)
 
     return df
 
