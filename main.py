@@ -1,5 +1,6 @@
 from sklearn.cluster import KMeans
 import pandas as pd
+import numpy as np
 import sys
 
 
@@ -14,6 +15,13 @@ def read_dataset(file: str) -> pd.DataFrame:
         print(f"Error reading dataset '{file}': {e}")
         return pd.DataFrame()
 
+def clean_dataset(df: pd.DataFrame):
+    # remove inf
+    df = df.replace([float("inf"), "inf", "Infinity", "infinity"], sys.float_info.max)
+    # remove nan
+    df = df.replace("nan", -2)
+
+    return df
 
 def kmeans_clustering(df: pd.DataFrame, k: int = 3):
     """
@@ -44,7 +52,7 @@ if __name__ == "__main__":
 
     file = sys.argv[1]
     df = read_dataset(file)
-
+    df = clean_dataset(df)
     # Run K-means
     result = kmeans_clustering(df, k=3)
     if result:
