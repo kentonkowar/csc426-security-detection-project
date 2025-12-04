@@ -1,0 +1,13 @@
+
+IMPORTANT
+Martin- Test model
+- (maybe) test model against new data (transform and scale original)
+
+Model accuracy, recall, f1, confusion matrix, time
+
+1 page writeup on how it works (check d2l anouncement)
+
+
+
+NICE TO HAVE
+auto find and compare models by f1 score (to find the best for running on a larger data set)
