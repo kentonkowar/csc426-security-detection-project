@@ -1,10 +1,15 @@
-from sklearn.cluster import KMeans
+import pandas as pd # df for train and test data
+import numpy as np 
+import time # timing model
+import sys 
+import joblib # saving model and scalar
+import os   
+from sklearn.cluster import KMeans 
 from sklearn.model_selection import train_test_split
-import pandas as pd
-import numpy as np
-import sys
+from sklearn.preprocessing import StandardScaler #scale model
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from sklearn.impute import SimpleImputer # handle nan values
 
-DATA_FILE="/Volumes/follower/data/MachineLearningCVE/Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv"
 OPTIONS={}
 COLUMNS=[" Destination Port", " Flow Duration", " Total Fwd Packets", " Total Backward Packets", "Total Length of Fwd Packets", 
          " Total Length of Bwd Packets", " Fwd Packet Length Max", " Fwd Packet Length Min", " Fwd Packet Length Mean", 
@@ -22,15 +27,23 @@ COLUMNS=[" Destination Port", " Flow Duration", " Total Fwd Packets", " Total Ba
          "Active Mean", " Active Std", " Active Max", " Active Min", "Idle Mean", " Idle Std", " Idle Max", " Idle Min"]
 TARGET=" Label"
 # label groupings used
-ATTACK_ITEMS_SMALL = ["BENIGN", "DDoS", "PortScan", "Bot", "Infiltration", "DoS"]
+ATTACK_ITEMS_SMALL = ['BENIGN', 'Infiltration']#["BENIGN", "DDoS", "PortScan", "Bot", "Infiltration", "DoS"]
 ATTACK_ITEMS = ["BENIGN", "DDoS", "PortScan", "Bot", "Infiltration", "FTP-Patator", 
-           "SSH-Patator", "DoS slowloris", "DoS Slowhttptest", "DoS Hulk", "DoS GoldenEye", "Heartbleed"]
+           "SSH-Patator", "DoS slowloris", "DoS Slowhttptest", "DoS Hulk", "DoS GoldenEye", "Heartbleed", "DoS"]
 REFINED=False
+INFINITY = 1e11
 # normalize data
 NORMALIZE={"DoS slowloris": "Dos", "DoS Slowhttptest": "DoS", "DoS Hulk": "DoS", "DoS GoldenEye": "DoS"}
+x = 0
+LABEL_MAP_INT = {}
+for i in ATTACK_ITEMS:
+    LABEL_MAP_INT[i]= x
+    x += 1
 
 # number of clusters to use
+global CLUSTER_COUNT
 CLUSTER_COUNT = len(ATTACK_ITEMS_SMALL) if not REFINED else len(ATTACK_ITEMS)
+CLUSTER_COUNT += 1
 TRAIN_TEST_P = 0.2 # proportion testing data
 TESTING = True
 
@@ -41,26 +54,33 @@ def read_dataset(file: str) -> pd.DataFrame:
     """
     try:
         df = pd.read_csv(file)
-        if TESTING:
-            print(CLUSTER_COUNT)
-            global CLUSTER_COUNT
-            CLUSTER_COUNT = len(df[TARGET].unique())
-            print(CLUSTER_COUNT)
+        # if TESTING:
+            # print(CLUSTER_COUNT)
+            # print(len(df[TARGET].unique()))
         return df
     except Exception as e:
         print(f"Error reading dataset '{file}': {e}")
         return pd.DataFrame()
+    
 def clean_dataset(df: pd.DataFrame):
     # remove inf
-    df = df.replace([float("inf"), "inf", "Infinity", "infinity"], sys.float_info.max)
+    df = df.replace([float("inf"), "inf", "Infinity", "infinity"], INFINITY)
     # remove nan
-    df = df.replace(np.nan, -2)
+    df = df.dropna()
+    for c in df.columns:
+        df = df[df[c].notna()]
+    df = df.reset_index(drop=True)
 
     # reduce label requirements
     if not REFINED:
         df[TARGET] = df[TARGET].replace(NORMALIZE)
         df = df[df[TARGET].isin(ATTACK_ITEMS_SMALL)]
+    # df[TARGET] = df[TARGET].replace(LABEL_MAP_INT)
 
+    # df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    #split numeric columns
+   
     return df
 
 def kmeans_clustering(x: pd.DataFrame, y: pd.DataFrame, k: int = 3):
@@ -80,28 +100,93 @@ def kmeans_clustering(x: pd.DataFrame, y: pd.DataFrame, k: int = 3):
     df["cluster"] = labels
     return df, model
 
+def get_majority_vote_map(kmeans_model, X_train, y_train):
+    # The 'Bridge' Logic: Assigns the most frequent Label (Mode) to each cluster.
 
-if len(sys.argv) < 2:
-    print("Usage: main.py dataset.csv")
-    exit(1)
+    train_clusters = kmeans_model.predict(X_train)
+    reference_df = pd.DataFrame({'cluster': train_clusters, 'label': y_train.values})
+    
+    mapping = {}
+    for i in range(kmeans_model.n_clusters):
+        subset = reference_df[reference_df['cluster'] == i]
+        if not subset.empty:
+            mapping[i] = subset['label'].mode()[0]
+        else:
+            mapping[i] = "Unknown"
+    return mapping
 
-file = sys.argv[1]
-df = read_dataset(file)
-df = clean_dataset(df)
-y=df[TARGET]
-X=df.drop(TARGET, axis=1)
-xtrain, xtest, ytrain, ytest= train_test_split(df, test_size=0.2, random_state=42, shuffle=True)
+def run_test_timed(model, x, y, cluster_map):
+    print("Running Performance Test...")
+    start_detect = time.time()
+    
+    # A. Predict
+    test_clusters = model.predict(x)
+
+    # B. Translate
+    ypred = [cluster_map[c] for c in test_clusters]
+    
+    detect_time = time.time() - start_detect
+
+    # OUTPUT
+    print("\n" + "="*40)
+    print("FINAL METRICS REPORT")
+    print("="*40)
+    print(f"Total Detection Time:   {detect_time:.4f}s")
+    print(f"Avg Time per Flow:      {detect_time/len(x):.8f}s")
+    print("-" * 40)
+    print(f"F1 Score (Weighted):    {f1_score(y, ypred, average='weighted'):.4f}")
+    print(f"Accuracy:               {np.mean(y == ypred):.4f}")
+    print("-" * 40)
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y, ypred))
+    print("\nClassification Report:")
+    print(classification_report(y, ypred))
+
+    return f1_score(y, ypred, average='weighted'), detect_time
 
 
-# Run K-means
-kmeans = KMeans(n_clusters=CLUSTER_COUNT, n_init="auto", random_state=42)
-kmeans.fit(xtrain) 
-labels = kmeans.predict(xtest) # to change
-inertia = kmeans.inertia_ # to change
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: main.py dataset.csv")
+        exit(1)
 
+    file = sys.argv[1]
+    df = clean_dataset(read_dataset(file))
 
-# # Save results
-# df.to_csv("output_with_clusters.csv", index=False)
-# print("\nResults written to output_with_clusters.csv")
+    y=df[TARGET]
+    X=df.drop(TARGET, axis=1)
 
-exit(0)
+    # scalar for data
+    scaler = StandardScaler()
+    xscaled=scaler.fit_transform(X)
+
+    # X_scaled, y, test_size=0.2, random_state=42, stratify=y
+    xtrain, xtest, ytrain, ytest= train_test_split(xscaled, y, test_size=0.2, random_state=42, shuffle=True)
+
+    # Run K-means
+    kmeans = KMeans(n_clusters=CLUSTER_COUNT, n_init="auto", random_state=42)
+    start_train = time.time() # time and train model
+    kmeans.fit(xtrain) 
+    print(f"Training Complete. Time: {time.time() - start_train:.2f}s")
+
+    cluster_map = get_majority_vote_map(kmeans, xtrain, ytrain)
+    print("cluster definitions ", cluster_map)
+
+    run_test_timed(kmeans, xtest,ytest, cluster_map)
+
+    # # Save results
+    # df.to_csv("output_with_clusters.csv", index=False)
+    # print("\nResults written to output_with_clusters.csv")
+
+    exit(0)
+
+"""
+for imputing data
+ numeric_df = df.select_dtypes(include=[np.number])
+    non_numeric_df = df.select_dtypes(exclude=[np.number])
+    print(numeric_df.shape)
+    print(non_numeric_df.shape)
+    imp = SimpleImputer(missing_values=np.nan, strategy='mean')
+    numeric_imputed = pd.DataFrame(imp.fit_transform(numeric_df), columns=numeric_df.columns)
+    df = pd.concat([numeric_imputed, non_numeric_df], axis=1)
+"""
