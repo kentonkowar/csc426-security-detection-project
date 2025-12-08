@@ -32,6 +32,7 @@ NORMALIZE={"DoS slowloris": "Dos", "DoS Slowhttptest": "DoS", "DoS Hulk": "DoS",
 # number of clusters to use
 CLUSTER_COUNT = len(ATTACK_ITEMS_SMALL) if not REFINED else len(ATTACK_ITEMS)
 TRAIN_TEST_P = 0.2 # proportion testing data
+TESTING = True
 
 # manipulate dataset
 def read_dataset(file: str) -> pd.DataFrame:
@@ -40,6 +41,11 @@ def read_dataset(file: str) -> pd.DataFrame:
     """
     try:
         df = pd.read_csv(file)
+        if TESTING:
+            print(CLUSTER_COUNT)
+            global CLUSTER_COUNT
+            CLUSTER_COUNT = len(df[TARGET].unique())
+            print(CLUSTER_COUNT)
         return df
     except Exception as e:
         print(f"Error reading dataset '{file}': {e}")
@@ -76,7 +82,7 @@ def kmeans_clustering(x: pd.DataFrame, y: pd.DataFrame, k: int = 3):
 
 
 if len(sys.argv) < 2:
-    print("Usage: python script.py dataset.csv")
+    print("Usage: main.py dataset.csv")
     exit(1)
 
 file = sys.argv[1]
