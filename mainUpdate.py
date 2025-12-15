@@ -1,174 +1,130 @@
-import pandas as pd
-import numpy as np
-import time
-import sys
-import joblib 
-import os
-from sklearn.cluster import KMeans
+import pandas as pd # df for train and test data
+import numpy as np 
+import time # timing model
+import sys 
+import joblib # saving model and scalar
+import os   
+from sklearn.ensemble import RandomForestClassifier 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler #scale model
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 
 # --- CONFIGURATION ---
-DATA_FILE = "/Volumes/follower/data/MachineLearningCVE/Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv"
-MODEL_FILENAME = "ids_model.pkl"
-SCALER_FILENAME = "ids_scaler.pkl"
+TARGET = " Label" # The column to predict
+INFINITY = 1e11   # Value to replace 'inf' with
 
-# --- THE FEATURE LIST  ---
-# We use this to strictly filter the dataset columns
-CHOSEN_COLUMNS = [
-    " Destination Port", " Flow Duration", " Total Fwd Packets", " Total Backward Packets", "Total Length of Fwd Packets", 
-    " Total Length of Bwd Packets", " Fwd Packet Length Max", " Fwd Packet Length Min", " Fwd Packet Length Mean", 
-    " Fwd Packet Length Std", "Bwd Packet Length Max", " Bwd Packet Length Min", " Bwd Packet Length Mean", 
-    " Bwd Packet Length Std", "Flow Bytes/s", " Flow Packets/s", " Flow IAT Mean", " Flow IAT Std", " Flow IAT Max", 
-    " Flow IAT Min", "Fwd IAT Total", " Fwd IAT Mean", " Fwd IAT Std", " Fwd IAT Max", " Fwd IAT Min", "Bwd IAT Total", 
-    " Bwd IAT Mean", " Bwd IAT Std", " Bwd IAT Max", " Bwd IAT Min", "Fwd PSH Flags", " Bwd PSH Flags", " Fwd URG Flags", 
-    " Bwd URG Flags", " Fwd Header Length", " Bwd Header Length", "Fwd Packets/s", " Bwd Packets/s", " Min Packet Length", 
-    " Max Packet Length", " Packet Length Mean", " Packet Length Std", " Packet Length Variance", "FIN Flag Count", 
-    " SYN Flag Count", " RST Flag Count", " PSH Flag Count", " ACK Flag Count", " URG Flag Count", " CWE Flag Count", 
-    " ECE Flag Count", " Down/Up Ratio", " Average Packet Size", " Avg Fwd Segment Size", " Avg Bwd Segment Size", 
-    " Fwd Header Length", "Fwd Avg Bytes/Bulk", " Fwd Avg Packets/Bulk", " Fwd Avg Bulk Rate", " Bwd Avg Bytes/Bulk", 
-    " Bwd Avg Packets/Bulk", "Bwd Avg Bulk Rate", "Subflow Fwd Packets", " Subflow Fwd Bytes", " Subflow Bwd Packets", 
-    " Subflow Bwd Bytes", "Init_Win_bytes_forward", " Init_Win_bytes_backward", " act_data_pkt_fwd", " min_seg_size_forward", 
-    " Active Mean", " Active Std", " Active Max", " Active Min", "Idle Mean", " Idle Std", " Idle Max", " Idle Min"
-]
+# Normalize dictionary: Groups specific attacks into broader categories
+NORMALIZE = {
+    "DoS slowloris": "DoS", 
+    "DoS Slowhttptest": "DoS", 
+    "DoS Hulk": "DoS", 
+    "DoS GoldenEye": "DoS", 
+    "FTP-Patator": "BruteForce", 
+    "SSH-Patator": "BruteForce"
+}
 
-# --- CORE FUNCTIONS ---
+# --- FUNCTIONS ---
 
-def get_majority_vote_map(kmeans_model, X_train, y_train):
-    """
-    The 'Bridge' Logic: Assigns the most frequent Label (Mode) to each cluster.
-    """
-    train_clusters = kmeans_model.predict(X_train)
-    reference_df = pd.DataFrame({'cluster': train_clusters, 'label': y_train.values})
+def read_dataset(file: str) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(file)
+        return df
+    except Exception as e:
+        print(f"Error reading dataset '{file}': {e}")
+        return pd.DataFrame()
     
-    mapping = {}
-    for i in range(kmeans_model.n_clusters):
-        subset = reference_df[reference_df['cluster'] == i]
-        if not subset.empty:
-            mapping[i] = subset['label'].mode()[0]
-        else:
-            mapping[i] = "Unknown"
-    return mapping
-
-def load_and_clean_data(filepath):
-    print(f"Loading file: {filepath}...")
+def clean_dataset(df: pd.DataFrame):
+    # 1. Replace Infinity
+    df = df.replace([np.inf, -np.inf, "inf", "Infinity"], INFINITY)
     
-    if not os.path.exists(filepath):
-        print(f"\n[ERROR] File not found at: {filepath}")
-        sys.exit(1)
-        
-    df = pd.read_csv(filepath)
-    
-    # 1. STANDARDIZE COLUMN NAMES
-    # Fix the "Hidden Space" problem so we can match the list safely
-    df.columns = df.columns.str.strip()
-    
-    # Clean the friend's list too (just in case)
-    clean_feature_list = [c.strip() for c in CHOSEN_COLUMNS]
-    
-    # Identify Target
-    target_col = "Label"
-    if target_col not in df.columns:
-        print(f"\n[ERROR] Could not find '{target_col}' column.")
-        sys.exit(1)
+    # 2. Drop rows with missing values
+    df = df.dropna()
+    for c in df.columns:
+        df = df[df[c].notna()]
+    df = df.reset_index(drop=True)
 
-    # 2. FEATURE SELECTION (Using the Friend's List)
-    # We keep ONLY the columns in the list + the Target
-    # This automatically drops "Flow ID", "IP", "Timestamp" etc.
-    cols_to_keep = clean_feature_list + [target_col]
-    
-    # Safety check: Ensure all requested columns actually exist
-    existing_cols = [c for c in cols_to_keep if c in df.columns]
-    df = df[existing_cols]
+    # 3. Normalize Labels (Group similar attacks)
+    # This ensures your model works even if your file has different specific attack names
+    if TARGET in df.columns:
+        df[TARGET] = df[TARGET].replace(NORMALIZE)
+   
+    return df
 
-    print(f"Initial Shape: {df.shape}")
-
-    # 3. GARBAGE REMOVAL
-    df = df.replace([np.inf, -np.inf], np.nan).dropna()
-
-    # 4. LABEL MAPPING (Normalize "DoS" variants)
-    attack_mapping = {
-        "DoS slowloris": "DoS", 
-        "DoS Slowhttptest": "DoS", 
-        "DoS Hulk": "DoS", 
-        "DoS GoldenEye": "DoS"
-    }
-    df[target_col] = df[target_col].replace(attack_mapping)
-
-    # 5. STRICT SCOPE FILTERING
-    allowed_labels = ["BENIGN", "DDoS", "PortScan", "Bot", "Infiltration", "DoS"]
-    df = df[df[target_col].isin(allowed_labels)]
-    
-    print(f"Cleaned Shape: {df.shape}")
-    print(f"Features used: {len(df.columns) - 1}") # -1 for Label
-    
-    return df, target_col
-
-# --- MAIN EXECUTION ---
-
-if __name__ == "__main__":
-    # STEP 1: LOAD
-    df, target_col = load_and_clean_data(DATA_FILE)
-
-    # STEP 2: SEPARATE FEATURES AND TARGET
-    X_raw = df.drop(columns=[target_col])
-    y = df[target_col]
-
-    # STEP 3: SCALE (Crucial for Euclidean Distance)
-    print("Scaling features...")
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_raw)
-
-    # STEP 4: SPLIT
-    print("Splitting Train/Test (80/20)...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=0.2, random_state=42, stratify=y
-    )
-
-    # STEP 5: TRAIN
-    # Using 12 clusters to allow for variations within the 6 classes
-    k = 12 
-    print(f"Training K-Means with k={k}...")
-    
-    start_train = time.time()
-    kmeans = KMeans(n_clusters=k, n_init='auto', random_state=42)
-    kmeans.fit(X_train)
-    print(f"Training Complete. Time: {time.time() - start_train:.2f}s")
-
-    # STEP 6: MAP CLUSTERS TO LABELS
-    print("Mapping clusters...")
-    cluster_map = get_majority_vote_map(kmeans, X_train, y_train)
-    print("Cluster Definitions:", cluster_map)
-
-    # STEP 7: TEST & REPORT
+def run_test_timed(model, x, y):
     print("Running Performance Test...")
     start_detect = time.time()
     
-    # A. Predict
-    test_clusters = kmeans.predict(X_test)
-    
-    # B. Translate
-    y_pred = [cluster_map[c] for c in test_clusters]
+    # Predict directly
+    ypred = model.predict(x)
     
     detect_time = time.time() - start_detect
-    
+
     # OUTPUT
     print("\n" + "="*40)
     print("FINAL METRICS REPORT")
     print("="*40)
     print(f"Total Detection Time:   {detect_time:.4f}s")
-    print(f"Avg Time per Flow:      {detect_time/len(X_test):.8f}s")
+    print(f"Avg Time per Flow:      {detect_time/len(x):.8f}s")
     print("-" * 40)
-    print(f"F1 Score (Weighted):    {f1_score(y_test, y_pred, average='weighted'):.4f}")
-    print(f"Accuracy:               {np.mean(y_test == y_pred):.4f}")
+    print(f"F1 Score (Weighted):    {f1_score(y, ypred, average='weighted'):.4f}")
+    print(f"Accuracy:               {np.mean(y == ypred):.4f}")
     print("-" * 40)
     print("\nConfusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
+    print(confusion_matrix(y, ypred))
     print("\nClassification Report:")
-    print(classification_report(y_test, y_pred))
+    print(classification_report(y, ypred))
 
-    # STEP 8: SAVE
-    joblib.dump(kmeans, MODEL_FILENAME)
-    joblib.dump(scaler, SCALER_FILENAME)
-    print(f"\nSystem saved to {MODEL_FILENAME}")
+    return f1_score(y, ypred, average='weighted'), detect_time
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: main.py dataset.csv")
+        exit(1)
+
+    file = sys.argv[1]
+    
+    # Load and clean data
+    df = clean_dataset(read_dataset(file))
+
+    # Separate Features and Target
+    if TARGET not in df.columns:
+        print(f"Error: Target column '{TARGET}' not found.")
+        exit(1)
+
+    y = df[TARGET]
+    # Select only numeric columns for training (removes IPs/Timestamps if present)
+    X = df.drop(TARGET, axis=1).select_dtypes(include=[np.number])
+
+    # Scale Data
+    print("Scaling features...")
+    scaler = StandardScaler()
+    xscaled = scaler.fit_transform(X)
+
+    # Split Data
+    # 'stratify=y' ensures even tiny attacks are present in both Train and Test sets
+    print("Splitting data...")
+    xtrain, xtest, ytrain, ytest = train_test_split(
+        xscaled, y, test_size=0.2, random_state=42, shuffle=True, stratify=y
+    )
+
+    # Train Random Forest
+    print("Training Random Forest...")
+    start_train = time.time()
+    
+    # class_weight='balanced' is the "Magic Fix" for your imbalance.
+    # It tells the model to pay huge attention to rare attacks.
+    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, class_weight='balanced')
+    model.fit(xtrain, ytrain) 
+    
+    print(f"Training Complete. Time: {time.time() - start_train:.2f}s")
+
+    # Run Test
+    run_test_timed(model, xtest, ytest)
+
+    # Save Results
+    joblib.dump(model, "ids_model.pkl")
+    joblib.dump(scaler, "ids_scaler.pkl")
+    print("\nModel saved to ids_model.pkl")
+
+    exit(0)
