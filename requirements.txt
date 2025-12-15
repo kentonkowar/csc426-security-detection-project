@@ -3,3 +3,4 @@ scikit-learn
 pypcapkit
 numpy
 ipython[all]
+algorithms

@@ -8,8 +8,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler #scale model
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
+# from algorithms.sorting import heap_sort
 
-# --- CONFIGURATION ---
+
 TARGET = " Label" # The column to predict
 INFINITY = 1e11   # Value to replace 'inf' with
 
@@ -23,7 +24,6 @@ NORMALIZE = {
     "SSH-Patator": "BruteForce"
 }
 
-# --- FUNCTIONS ---
 
 def read_dataset(file: str) -> pd.DataFrame:
     try:
@@ -34,17 +34,16 @@ def read_dataset(file: str) -> pd.DataFrame:
         return pd.DataFrame()
     
 def clean_dataset(df: pd.DataFrame):
-    # 1. Replace Infinity
+    # Replace Infinity
     df = df.replace([np.inf, -np.inf, "inf", "Infinity"], INFINITY)
     
-    # 2. Drop rows with missing values
+    # Drop rows with missing values
     df = df.dropna()
     for c in df.columns:
         df = df[df[c].notna()]
     df = df.reset_index(drop=True)
 
-    # 3. Normalize Labels (Group similar attacks)
-    # This ensures your model works even if your file has different specific attack names
+    # Normalize Labels (Group similar attacks)
     if TARGET in df.columns:
         df[TARGET] = df[TARGET].replace(NORMALIZE)
    
@@ -58,23 +57,23 @@ def run_test_timed(model, x, y):
     ypred = model.predict(x)
     
     detect_time = time.time() - start_detect
-
+    f1s= f1_score(y, ypred, average='weighted')
     # OUTPUT
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y, ypred))
+    print("\nClassification Report:")
+    print(classification_report(y, ypred))
     print("\n" + "="*40)
     print("FINAL METRICS REPORT")
     print("="*40)
     print(f"Total Detection Time:   {detect_time:.4f}s")
     print(f"Avg Time per Flow:      {detect_time/len(x):.8f}s")
     print("-" * 40)
-    print(f"F1 Score (Weighted):    {f1_score(y, ypred, average='weighted'):.4f}")
+    print(f"F1 Score (Weighted):    {f1s:.4f}")
     print(f"Accuracy:               {np.mean(y == ypred):.4f}")
     print("-" * 40)
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(y, ypred))
-    print("\nClassification Report:")
-    print(classification_report(y, ypred))
 
-    return f1_score(y, ypred, average='weighted'), detect_time
+    return f1s, detect_time
 
 
 if __name__ == "__main__":
@@ -94,7 +93,7 @@ if __name__ == "__main__":
 
     y = df[TARGET]
     # Select only numeric columns for training (removes IPs/Timestamps if present)
-    X = df.drop(TARGET, axis=1).select_dtypes(include=[np.number])
+    X = df.drop(TARGET, axis=1)#.select_dtypes(include=[np.number])
 
     # Scale Data
     print("Scaling features...")
@@ -112,15 +111,16 @@ if __name__ == "__main__":
     print("Training Random Forest...")
     start_train = time.time()
     
-    # class_weight='balanced' is the "Magic Fix" for your imbalance.
-    # It tells the model to pay huge attention to rare attacks.
+    # class_weight='balanced' fixes data imbalance.
+    # It tells the model to pay huge attention to rare attacks, not the common benign.
     model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, class_weight='balanced')
     model.fit(xtrain, ytrain) 
     
     print(f"Training Complete. Time: {time.time() - start_train:.2f}s")
 
     # Run Test
-    run_test_timed(model, xtest, ytest)
+
+    f1s, _ = run_test_timed(model, xtest, ytest)
 
     # Save Results
     joblib.dump(model, "ids_model.pkl")
@@ -128,3 +128,4 @@ if __name__ == "__main__":
     print("\nModel saved to ids_model.pkl")
 
     exit(0)
+
