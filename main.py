@@ -69,7 +69,7 @@ def kmeans_clustering(x: pd.DataFrame, y: pd.DataFrame, k: int = 3):
     if numeric_df.empty:
         print("No numeric columns found for K-means.")
         return None
-
+    from sklearn.cluster import KMeans
     model = KMeans(n_clusters=k, n_init="auto", random_state=42)
     labels = model.fit_predict(numeric_df)
 
@@ -126,6 +126,8 @@ def run_test_timed(model, x, y):
     
     detect_time = time.time() - start_detect
     f1s= f1_score(y, ypred, average='weighted')
+    # precision, recall, f1s, true_sum = precision_recall_fscore_support(y, ypred, average='weighted')
+
     # OUTPUT
     print("\nConfusion Matrix:")
     print(confusion_matrix(y, ypred))
@@ -177,11 +179,11 @@ if __name__ == "__main__":
 
     # Train Random Forest
     print("Training Random Forest...")
-    start_train = time.time()
     
     # class_weight='balanced' fixes data imbalance.
     # It tells the model to pay huge attention to rare attacks, not the common benign.
     model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, class_weight='balanced')
+    start_train = time.time()
     model.fit(xtrain, ytrain) 
     
     print(f"Training Complete. Time: {time.time() - start_train:.2f}s")
